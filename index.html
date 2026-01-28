@@ -1,0 +1,181 @@
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Termux OSINT Manager — Investigations</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <style>body{padding:1rem;} pre{white-space:pre-wrap;word-break:break-word;}</style>
+</head>
+<body>
+  <div class="container">
+    <h3>Termux OSINT Manager — Investigations</h3>
+
+    <div id="authArea" class="mb-3">
+      <div class="row g-2">
+        <div class="col-auto"><input id="user" class="form-control" placeholder="username" /></div>
+        <div class="col-auto"><input id="pass" type="password" class="form-control" placeholder="password" /></div>
+        <div class="col-auto"><button id="loginBtn" class="btn btn-primary">Login</button></div>
+        <div class="col-auto"><button id="regBtn" class="btn btn-outline-secondary">Register</button></div>
+      </div>
+      <div id="authMsg" class="text-muted small mt-1"></div>
+    </div>
+
+    <div id="mainUI" style="display:none;">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h5>Create Investigation</h5>
+          <div class="row g-2">
+            <div class="col-md-4"><input id="invTitle" class="form-control" placeholder="Title" /></div>
+            <div class="col-md-5"><input id="invScope" class="form-control" placeholder="Scope note (permission details)" /></div>
+            <div class="col-md-3"><button id="createInvBtn" class="btn btn-success w-100">Create</button></div>
+            <div class="col-12 mt-2"><input id="invDesc" class="form-control" placeholder="Description" /></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <h5>Quick Username Discovery</h5>
+          <div class="row g-2">
+            <div class="col-md-4"><input id="username" class="form-control" placeholder="username to discover" /></div>
+            <div class="col-md-2"><button id="discoverBtn" class="btn btn-info w-100">Discover</button></div>
+            <div class="col-md-6"><div id="discoverResult" class="small text-muted"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-md-6">
+          <h6>Investigations</h6>
+          <div id="invList"></div>
+        </div>
+        <div class="col-md-6">
+          <h6>Selected Investigation</h6>
+          <div id="invView"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+<script>
+let token = null;
+
+async function apiFetch(path, opts={}) {
+  if (!opts.headers) opts.headers = {};
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  let r = await fetch(path, opts);
+  if (r.status === 401) {
+    token = null; document.getElementById('mainUI').style.display='none';
+    document.getElementById('authMsg').textContent = 'Session expired';
+    return null;
+  }
+  return r;
+}
+
+document.getElementById('loginBtn').onclick = async () => {
+  const user = document.getElementById('user').value;
+  const pass = document.getElementById('pass').value;
+  let fd = new FormData(); fd.append('username', user); fd.append('password', pass);
+  let r = await fetch('/api/login',{method:'POST', body:fd});
+  if (r.ok) {
+    let j = await r.json(); token = j.access_token; document.getElementById('mainUI').style.display='block';
+    document.getElementById('authMsg').textContent = 'Logged in as '+j.username;
+    refreshInvestigations();
+  } else {
+    document.getElementById('authMsg').textContent = 'Login failed';
+  }
+};
+document.getElementById('regBtn').onclick = async () => {
+  const user = document.getElementById('user').value;
+  const pass = document.getElementById('pass').value;
+  let fd = new FormData(); fd.append('username', user); fd.append('password', pass);
+  let r = await fetch('/api/register',{method:'POST', body:fd});
+  document.getElementById('authMsg').textContent = r.ok ? 'Registered. Please login.' : 'Register failed';
+};
+
+document.getElementById('createInvBtn').onclick = async () => {
+  const title = document.getElementById('invTitle').value;
+  const desc = document.getElementById('invDesc').value;
+  const scope = document.getElementById('invScope').value;
+  if (!title) { alert('Title required'); return; }
+  let fd = new FormData(); fd.append('title', title); fd.append('description', desc); fd.append('scope_note', scope);
+  let r = await apiFetch('/api/investigation', {method:'POST', body:fd});
+  if (r && r.ok) { alert('Investigation created'); refreshInvestigations(); } else { alert('Failed'); }
+};
+
+document.getElementById('discoverBtn').onclick = async () => {
+  const username = document.getElementById('username').value.trim();
+  if (!username) { alert('Enter username'); return; }
+  let fd = new FormData(); fd.append('username', username);
+  let r = await apiFetch('/api/discover/username', {method:'POST', body:fd});
+  if (r && r.ok) {
+    let j = await r.json();
+    let out = j.results.map(r => `${r.platform}: ${r.found ? 'FOUND' : 'not found'} (${r.url})`).join('\n');
+    document.getElementById('discoverResult').textContent = out;
+  } else {
+    document.getElementById('discoverResult').textContent = 'Discovery failed';
+  }
+};
+
+async function refreshInvestigations() {
+  if (!token) return;
+  let r = await apiFetch('/api/investigations', {method:'GET'});
+  if (!r || !r.ok) { document.getElementById('invList').innerText = 'Failed to load'; return; }
+  let arr = await r.json();
+  let area = document.getElementById('invList'); area.innerHTML = '';
+  for (let inv of arr) {
+    let btn = document.createElement('button'); btn.className='btn btn-sm btn-outline-secondary m-1';
+    btn.textContent = inv.title;
+    btn.onclick = () => viewInvestigation(inv);
+    area.appendChild(btn);
+  }
+}
+
+function viewInvestigation(inv) {
+  document.getElementById('invView').innerHTML = `<h5>${inv.title}</h5><p>${inv.description || ''}</p><p>Scope: ${inv.scope_note||''}</p>
+    <div class="mb-2">
+      <input id="eurl" class="form-control form-control-sm" placeholder="Add reference URL" />
+      <div class="mt-1">
+        <button id="addRefBtn" class="btn btn-sm btn-primary">Add reference</button>
+        <button id="exportPdfBtn" class="btn btn-sm btn-outline-success">Export PDF</button>
+      </div>
+    </div>
+    <div id="eList"></div>
+  `;
+  document.getElementById('addRefBtn').onclick = async () => {
+    const u = document.getElementById('eurl').value.trim();
+    if (!u) { alert('URL required'); return; }
+    let fd = new FormData(); fd.append('kind', 'reference'); fd.append('title', 'ref'); fd.append('url', u);
+    let r = await apiFetch(`/api/investigation/${inv.id}/attach/url`, {method:'POST', body:fd});
+    if (r && r.ok) { alert('Added'); loadEvidence(inv.id); } else alert('Failed');
+  };
+  document.getElementById('exportPdfBtn').onclick = async () => {
+    let r = await apiFetch(`/api/investigation/${inv.id}/export/pdf`, {method:'GET'});
+    if (r && r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } else alert('Export failed');
+  };
+  loadEvidence(inv.id);
+}
+
+async function loadEvidence(invId) {
+  let r = await apiFetch(`/api/investigation/${invId}/evidence`, {method:'GET'});
+  if (!r || !r.ok) { document.getElementById('eList').innerText = 'Failed to load evidence'; return; }
+  let arr = await r.json();
+  let area = document.getElementById('eList'); area.innerHTML = '';
+  for (let ev of arr) {
+    let div = document.createElement('div'); div.className='border p-2 mb-1';
+    div.innerHTML = `<strong>${ev.title||ev.kind}</strong><div class="small">${ev.reference||''}</div>`;
+    area.appendChild(div);
+  }
+}
+
+document.getElementById('authMsg').textContent = 'Default admin on first run: admin / admin (change immediately)';
+</script>
+</body>
+</html>
